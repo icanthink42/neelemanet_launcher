@@ -53,12 +53,19 @@ struct App {
 }
 
 pub fn run(paths: Paths, source: Source) -> Result<()> {
-    let options = eframe::NativeOptions {
+    let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1060.0, 700.0])
             .with_min_inner_size([820.0, 580.0]),
         ..Default::default()
     };
+    // Wayland can withhold frame callbacks for covered/off-workspace windows.
+    // Blocking in OpenGL's vsync wait then prevents winit from answering desktop
+    // pings, causing an "Application Not Responding" dialog. Egui already
+    // schedules repaints on demand, so Linux does not need a blocking swap.
+    if cfg!(target_os = "linux") {
+        options.glow_options.vsync = false;
+    }
     eframe::run_native(
         "NeelemaNet",
         options,
@@ -389,8 +396,6 @@ impl eframe::App for App {
                 if let Some(pack) = self.catalog.as_ref().and_then(|c| c.packs.get(self.selected)).cloned() {
                     egui::Frame::new().fill(SURFACE).inner_margin(28.0).corner_radius(16.0).show(ui, |ui| {
                         ui.set_min_width((ui.available_width() - 8.0).max(0.0));
-                        ui.label(RichText::new("THE NEXT ADVENTURE STARTS HERE").size(11.0).color(GREEN).strong());
-                        ui.add_space(10.0);
                         ui.label(RichText::new(&pack.name).size(44.0).strong());
                         ui.add_space(6.0);
                         ui.label(RichText::new(&pack.description).size(17.0).color(MUTED));

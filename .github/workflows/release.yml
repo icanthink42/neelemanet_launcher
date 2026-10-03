@@ -75,6 +75,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       MACOSX_DEPLOYMENT_TARGET: '11.0'
+      # Include the Windows C runtime so users do not need a separate installer.
+      CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: '-C target-feature=+crt-static'
     steps:
       - uses: actions/checkout@v7
         with:
@@ -89,7 +91,7 @@ jobs:
           python-version: '3.12'
       - name: Install Linux build libraries
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libgl1-mesa-dev
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libgl1-mesa-dev libxcursor-dev libxi-dev libxrandr-dev
       - name: Check formatting
         run: cargo fmt --check
       - name: Lint
@@ -105,40 +107,11 @@ jobs:
           ARTIFACT: ${{ matrix.artifact }}
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
           RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
-        run: |
-          set -euo pipefail
-          mkdir -p dist
-          archive="$ARTIFACT-$RELEASE_TAG"
-          if [[ "$BUILD_TARGET" == *apple* ]]; then
-            mkdir -p 'dist/NeelemaNet.app/Contents/MacOS'
-            cp "target/$BUILD_TARGET/release/neelemanet_launcher" 'dist/NeelemaNet.app/Contents/MacOS/NeelemaNet'
-            cp packaging/Info.plist 'dist/NeelemaNet.app/Contents/Info.plist'
-            python - <<'PY'
-          import os, pathlib, plistlib
-          path = pathlib.Path('dist/NeelemaNet.app/Contents/Info.plist')
-          with path.open('rb') as file:
-              info = plistlib.load(file)
-          info['CFBundleShortVersionString'] = os.environ['RELEASE_VERSION'].split('-')[0].split('+')[0]
-          info['CFBundleVersion'] = os.environ['GITHUB_RUN_NUMBER']
-          with path.open('wb') as file:
-              plistlib.dump(info, file)
-          PY
-            codesign --force --deep --sign - dist/NeelemaNet.app
-            codesign --verify --deep --strict dist/NeelemaNet.app
-            ditto -c -k --keepParent dist/NeelemaNet.app "$archive.zip"
-          elif [[ "$BUILD_TARGET" == *windows* ]]; then
-            cp "target/$BUILD_TARGET/release/neelemanet_launcher.exe" dist/NeelemaNet.exe
-            7z a "$archive.zip" ./dist/NeelemaNet.exe
-          else
-            cp "target/$BUILD_TARGET/release/neelemanet_launcher" dist/NeelemaNet
-            tar -czf "$archive.tar.gz" -C dist NeelemaNet
-          fi
+        run: bash packaging/package.sh
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
-          path: |
-            ${{ matrix.artifact }}-${{ needs.prepare.outputs.tag }}.zip
-            ${{ matrix.artifact }}-${{ needs.prepare.outputs.tag }}.tar.gz
+          path: dist/downloads/*
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
@@ -166,12 +139,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for name in windows-x64 macos-arm64 macos-x64; do
-            test -s "release-assets/NeelemaNet-$name-$RELEASE_TAG.zip"
+          test -s "release-assets/NeelemaNet-windows-x64-$RELEASE_TAG.exe"
+          for name in macos-arm64 macos-x64; do
+            test -s "release-assets/NeelemaNet-$name-$RELEASE_TAG.dmg"
           done
-          test -s "release-assets/NeelemaNet-linux-x64-$RELEASE_TAG.tar.gz"
+          test -s "release-assets/NeelemaNet-linux-x64-$RELEASE_TAG.AppImage"
 
-          # Create the tag only after every platform has passed and its archive is ready.
+          # Create the tag only after every platform has passed and its download is ready.
           # The same workflow publishes it, so no second tag-triggered run is needed.
           if existing_commit=$(gh api "repos/$GH_REPO/git/ref/tags/$RELEASE_TAG" --jq '.object.sha' 2>/dev/null); then
             if [[ "$existing_commit" != "$RELEASE_COMMIT" ]]; then

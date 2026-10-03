@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=NeelemaNet
+Comment=Install and play NeelemaNet Minecraft modpacks
+Exec=NeelemaNet
+Icon=neelemanet
+Terminal=false
+Categories=Game;

@@ -45,10 +45,12 @@ For `v0.1.0+build.42`, the release assets are:
 
 | Platform | Download |
 | --- | --- |
-| Windows x64 | `NeelemaNet-windows-x64-v0.1.0+build.42.zip` containing `NeelemaNet.exe` |
-| Linux x64 | `NeelemaNet-linux-x64-v0.1.0+build.42.tar.gz` containing the executable |
-| macOS Apple Silicon | `NeelemaNet-macos-arm64-v0.1.0+build.42.zip` containing `NeelemaNet.app` |
-| macOS Intel | `NeelemaNet-macos-x64-v0.1.0+build.42.zip` containing `NeelemaNet.app` |
+| Windows x64 | `NeelemaNet-windows-x64-v0.1.0+build.42.exe` — double-click to run |
+| Linux x64 | `NeelemaNet-linux-x64-v0.1.0+build.42.AppImage` — allow execution in file properties, then double-click |
+| macOS Apple Silicon | `NeelemaNet-macos-arm64-v0.1.0+build.42.dmg` — open and drag NeelemaNet to Applications |
+| macOS Intel | `NeelemaNet-macos-x64-v0.1.0+build.42.dmg` — open and drag NeelemaNet to Applications |
+
+These launcher downloads require no manual archive extraction. The Linux AppImage bundles application libraries and targets x64 desktop Linux with glibc 2.35 or newer (such as Ubuntu 22.04+). On systems without FUSE, it can also be started with `APPIMAGE_EXTRACT_AND_RUN=1 ./NeelemaNet-*.AppImage`. GitHub also lists automatic **Source code** archives; players should use the platform downloads above. Modpack exports remain ZIP files and are handled automatically by the launcher.
 
 Rerun a failed workflow to resume the same tag/release, or choose **Actions → Build and publish release → Run workflow** to start a new build without entering a tag. Each platform builds the exact triggering commit. No tag is created if a build fails; existing tags are never moved to another commit. New releases remain drafts until all downloads are uploaded. Reruns can replace uploaded assets unless repository release immutability is enabled.
 
