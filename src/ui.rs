@@ -321,7 +321,7 @@ impl eframe::App for App {
             ui.horizontal_wrapped(|ui| {
                 ui.add_space(18.0);
                 if self.busy {
-                    ui.spinner();
+                    spinner(ui);
                 } else {
                     ui.label(RichText::new("Ready").color(GREEN));
                 }
@@ -460,4 +460,23 @@ impl eframe::App for App {
             });
         }
     }
+}
+
+/// Like `ui.spinner()`, but repaints at a fixed 20 fps. The stock spinner repaints every
+/// frame, which pins a CPU core when vsync is off.
+fn spinner(ui: &mut egui::Ui) {
+    let size = ui.spacing().interact_size.y;
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
+    let time = ui.ctx().input(|i| i.time);
+    let start = (time * std::f64::consts::TAU) as f32;
+    let radius = size / 2.0 - 2.0;
+    let points: Vec<egui::Pos2> = (0..=16)
+        .map(|n| {
+            let angle = start + n as f32 / 16.0 * std::f32::consts::PI * 1.5;
+            rect.center() + radius * egui::vec2(angle.cos(), angle.sin())
+        })
+        .collect();
+    ui.painter()
+        .add(egui::Shape::line(points, egui::Stroke::new(3.0, GREEN)));
+    ui.ctx().request_repaint_after(Duration::from_millis(50));
 }
