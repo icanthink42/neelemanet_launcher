@@ -1,0 +1,28 @@
+[package]
+name = "neelemanet_launcher"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+description = "One-click Minecraft modpacks for NeelemaNet"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
+directories = "6"
+eframe = { version = "0.36.2", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
+fs2 = "0.4"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tempfile = "3"
+toml = "0.8"
+url = "2"
+zip = { version = "7.2", default-features = false, features = ["deflate"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_Console"] }
+
+[profile.release]
+lto = "thin"
+strip = true

@@ -1,0 +1,16 @@
+# Publish this file in the repository; use direct ZIP download links for players.
+schema_version = 1
+title = "NeelemaNet"
+
+[[packs]]
+id = "duck-craft"
+name = "Duck Craft"
+version = "1.0.0"
+description = "The NeelemaNet modded survival pack. Build, explore, and play together."
+minecraft = "1.21.1"
+loader = "NeoForge 21.1.252"
+# Local paths are relative to this TOML file. Replace with a hosted URL before distributing.
+url = "duck craft.zip"
+sha256 = "7f9c1f3e40482b49b407b2c932d581b99c2fc876a1ba0975642cf672ec95a4b0"
+memory_mb = 8192
+# server = "play.example.com"
