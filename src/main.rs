@@ -34,6 +34,8 @@ enum Action {
     Login,
     /// Install a pack without starting Minecraft.
     Install { id: String },
+    /// Re-download a pack, carrying over player data and keeping the previous install.
+    Update { id: String },
     /// Install as needed, then launch. Prism prompts for Microsoft sign-in if needed.
     Play {
         id: String,
@@ -105,9 +107,10 @@ fn main() -> Result<()> {
                 }
                 return Ok(());
             }
-            let (id, play, profile) = match action {
-                Action::Install { id } => (id, false, None),
-                Action::Play { id, profile } => (id, true, profile),
+            let (id, play, profile, force) = match action {
+                Action::Install { id } => (id, false, None, false),
+                Action::Update { id } => (id, false, None, true),
+                Action::Play { id, profile } => (id, true, profile, false),
                 _ => unreachable!(),
             };
             let pack = catalog
@@ -116,14 +119,22 @@ fn main() -> Result<()> {
                 .find(|p| p.id == id)
                 .with_context(|| format!("Unknown pack: {id}"))?;
             let lock = paths.lock()?;
-            let root = launcher::install(&paths, pack, &source, &progress)?;
+            let root = if force {
+                launcher::update(&paths, pack, &source, &progress)?
+            } else {
+                launcher::install(&paths, pack, &source, &progress)?
+            };
             println!("Installed: {}", root.display());
             if play {
                 let executable = prism::ensure_installed(&paths, &progress)?;
                 let mut child = prism::start(
                     &paths,
                     &executable,
-                    Some(&pack.instance_id(&source)),
+                    Some(
+                        root.file_name()
+                            .and_then(|n| n.to_str())
+                            .context("Invalid installed instance name")?,
+                    ),
                     profile.as_deref(),
                     pack.server.as_deref(),
                 )?;

@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use eframe::egui::{self, Color32, RichText};
 use neelemanet_launcher::{
     Paths,
@@ -29,6 +29,7 @@ enum Job {
     Login,
     Play(usize),
     Install(usize),
+    Update(usize),
 }
 
 struct App {
@@ -112,8 +113,8 @@ impl App {
         let tx = self.sender.clone();
         let ctx = ctx.clone();
         let profile = self.profile.clone();
-        let pack = match &job {
-            Job::Play(i) | Job::Install(i) => {
+        let mut pack = match &job {
+            Job::Play(i) | Job::Install(i) | Job::Update(i) => {
                 self.catalog.as_ref().and_then(|c| c.packs.get(*i)).cloned()
             }
             _ => None,
@@ -125,6 +126,20 @@ impl App {
             };
             let progress = |message, fraction| send(Event::Progress(message, fraction));
             let result: Result<String> = (|| {
+                if let Some(selected) = &pack {
+                    let id = selected.id.clone();
+                    progress("Checking the latest pack list…".into(), None);
+                    let (catalog, warning) = catalog::load(&source, &paths)?;
+                    pack = Some(
+                        catalog
+                            .packs
+                            .iter()
+                            .find(|p| p.id == id)
+                            .context("This pack is no longer in the catalog")?
+                            .clone(),
+                    );
+                    send(Event::Catalog(catalog, warning));
+                }
                 if matches!(job, Job::Initialize | Job::Refresh) {
                     let (catalog, warning) = catalog::load(&source, &paths)?;
                     send(Event::Catalog(catalog, warning));
@@ -133,10 +148,16 @@ impl App {
                     }
                 }
                 let lock = paths.lock()?;
-                if let Some(pack) = &pack {
-                    launcher::install(&paths, pack, &source, &progress)?;
-                }
-                if matches!(job, Job::Install(_)) {
+                let root = if let Some(pack) = &pack {
+                    Some(if matches!(job, Job::Update(_)) {
+                        launcher::update(&paths, pack, &source, &progress)?
+                    } else {
+                        launcher::install(&paths, pack, &source, &progress)?
+                    })
+                } else {
+                    None
+                };
+                if matches!(job, Job::Install(_) | Job::Update(_)) {
                     return Ok("Installed and ready to play".into());
                 }
                 let executable = prism::ensure_installed(&paths, &progress)?;
@@ -144,11 +165,14 @@ impl App {
                 if matches!(job, Job::Initialize) {
                     return Ok("Ready when you are. Pick a pack and play.".into());
                 }
-                let instance = pack.as_ref().map(|p| p.instance_id(&source));
+                let instance = root
+                    .as_ref()
+                    .and_then(|p| p.file_name())
+                    .and_then(|n| n.to_str());
                 let mut child = prism::start(
                     &paths,
                     &executable,
-                    instance.as_deref(),
+                    instance,
                     Some(&profile),
                     pack.as_ref().and_then(|p| p.server.as_deref()),
                 )?;
@@ -187,9 +211,16 @@ impl App {
                     self.progress = progress;
                 }
                 Event::Catalog(catalog, warning) => {
+                    let selected_id = self
+                        .catalog
+                        .as_ref()
+                        .and_then(|c| c.packs.get(self.selected))
+                        .map(|p| &p.id);
+                    self.selected = selected_id
+                        .and_then(|id| catalog.packs.iter().position(|p| &p.id == id))
+                        .unwrap_or(0);
                     self.catalog = Some(catalog);
                     self.warning = warning;
-                    self.selected = 0;
                 }
                 Event::Done(message) => {
                     self.busy = false;
@@ -370,16 +401,26 @@ impl eframe::App for App {
                             }
                         });
                         ui.add_space(28.0);
-                        let installed = launcher::installed(&self.paths, &pack, &self.source);
+                        let current = launcher::current_install(&self.paths, &pack, &self.source).ok().flatten();
+                        let installed = current.is_some();
+                        let update_available = current.as_ref().is_some_and(|i| i.catalog_changed(&pack));
                         ui.horizontal(|ui| {
-                            let title = if installed { "Play now" } else { "Install & play" };
+                            let title = if update_available { "Update & play" } else if installed { "Play now" } else { "Install & play" };
                             let button = egui::Button::new(RichText::new(title).size(18.0).strong().color(Color32::from_rgb(16, 32, 20))).fill(GREEN);
                             if ui.add_enabled(!self.busy, button.min_size(egui::vec2(195.0, 52.0))).clicked() { self.start(Job::Play(self.selected), &ctx); }
                             if !installed && ui.add_enabled(!self.busy, egui::Button::new("Install only")).clicked() { self.start(Job::Install(self.selected), &ctx); }
-                            if installed && ui.button("Pack folder").clicked() { self.folder(&self.paths.instances().join(pack.instance_id(&self.source))); }
+                            if installed && ui.add_enabled(!self.busy, egui::Button::new("Update pack")).clicked() { self.start(Job::Update(self.selected), &ctx); }
+                            if let Some(current) = &current
+                                && ui.button("Pack folder").clicked() {
+                                self.folder(&current.root(&self.paths));
+                            }
                         });
                         ui.add_space(8.0);
-                        ui.label(RichText::new(if installed { "Installed · ready for another adventure" } else { "We'll download the pack and set everything up for you." }).size(12.0).color(MUTED));
+                        let detail = if update_available {
+                            format!("Update available: {} to {}. Your worlds and personal settings carry over.", current.as_ref().unwrap().pack.version, pack.version)
+                        } else if installed { "Play checks for updates automatically. Update pack forces a fresh download.".into() }
+                        else { "We'll download the pack and set everything up for you.".into() };
+                        ui.label(RichText::new(detail).size(12.0).color(MUTED));
                     });
                     ui.add_space(24.0);
                     ui.label(RichText::new("Less setup. More Minecraft.").size(21.0).strong());
@@ -409,7 +450,7 @@ impl eframe::App for App {
                 ui.separator();
                 ui.label(format!("Data folder: {}", self.paths.root.display()));
                 if ui.button("Open data folder").clicked() { self.folder(&self.paths.root.clone()); }
-                ui.label("Pack updates install separately. Your previous worlds remain in the previous version's instance folder.");
+                ui.label("Updates carry over your worlds and personal settings. Previous installations stay in prism/instances as backups.");
                 ui.hyperlink_to("Powered by Prism Launcher", "https://prismlauncher.org/");
             });
         }

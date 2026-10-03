@@ -23,8 +23,6 @@ jobs:
             target: x86_64-apple-darwin
             artifact: NeelemaNet-macos-x64
     runs-on: ${{ matrix.os }}
-    env:
-      NEELEMANET_CATALOG_URL: https://raw.githubusercontent.com/${{ github.repository }}/${{ github.event.repository.default_branch }}/packs.toml
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

@@ -63,6 +63,8 @@ pub struct Pack {
     pub version: String,
     pub description: String,
     pub url: String,
+    /// Accepted only for older catalogs/installation records; never checked or written.
+    #[serde(default, skip_serializing)]
     pub sha256: Option<String>,
     #[serde(default)]
     pub minecraft: String,
@@ -78,7 +80,16 @@ fn default_memory() -> u32 {
 
 impl Pack {
     pub fn instance_id(&self, source: &Source) -> String {
-        // Separate versions never overwrite worlds or user settings in older installs.
+        // Stable key for the installed-pack record, independent of version/download changes.
+        format!(
+            "neelemanet-{}-{:x}",
+            self.id,
+            Sha256::digest(source.label().as_bytes())
+        )
+    }
+
+    pub(crate) fn legacy_instance_id(&self, source: &Source) -> String {
+        // Locate installations made before update support was added.
         let key = format!(
             "{}\n{}\n{}\n{}",
             source.label(),
@@ -132,13 +143,6 @@ impl Catalog {
                 (512..=65536).contains(&p.memory_mb),
                 "Pack memory must be 512–65536 MiB"
             );
-            if let Some(hash) = &p.sha256 {
-                ensure!(
-                    hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit()),
-                    "Invalid SHA-256 for {}",
-                    p.id
-                );
-            }
         }
         Ok(catalog)
     }
@@ -183,21 +187,9 @@ pub fn load(source: &Source, paths: &Paths) -> Result<(Catalog, Option<String>)>
 }
 
 pub fn default_source() -> Result<Source> {
-    if let Some(url) = option_env!("NEELEMANET_CATALOG_URL") {
-        return Source::parse(url);
-    }
-    let cwd = std::env::current_dir()?.join("packs.toml");
-    if cwd.is_file() {
-        return Ok(Source::Local(cwd));
-    }
-    let adjacent = std::env::current_exe()?
-        .parent()
-        .context("No executable directory")?
-        .join("packs.toml");
-    if adjacent.is_file() {
-        return Ok(Source::Local(adjacent));
-    }
-    Source::parse(concat!(env!("CARGO_MANIFEST_DIR"), "/packs.toml"))
+    Source::parse(option_env!("NEELEMANET_CATALOG_URL").unwrap_or(
+        "https://raw.githubusercontent.com/icanthink42/neelemanet_launcher/main/packs.toml",
+    ))
 }
 
 #[cfg(test)]
