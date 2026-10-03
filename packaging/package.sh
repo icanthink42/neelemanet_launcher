@@ -36,11 +36,22 @@ else
     --output "$deploy"
   echo "c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d  $deploy" | sha256sum --check
   chmod +x "$deploy"
+  # Always start fresh: otherwise reruns can retain incompatible system libraries.
+  rm -rf dist/AppDir
   mkdir -p dist/AppDir/usr/bin
   cp "$binary" dist/AppDir/usr/bin/NeelemaNet
-  # These window-system libraries are loaded dynamically, so ldd cannot find them.
+  # Use the desktop's graphics/input stack. An older bundled Wayland library can
+  # stop the host Mesa driver loading; old xkbcommon cannot parse newer Compose
+  # files. Do not override linuxdeploy's system-library exclusions with --library.
+  exclusions=()
+  for name in 'libwayland-*.so*' 'libxkbcommon*.so*' 'libX11*.so*' 'libxcb*.so*' 'libEGL*.so*' 'libGL*.so*'; do
+    exclusions+=(--exclude-library "$name")
+  done
+  # Optional X11 helpers are not installed on every desktop. Bundle these, while
+  # keeping the core X11/XCB/xkbcommon libraries above supplied by the system.
+  # In particular xkbcommon-x11 must match the system xkbcommon, not the build OS.
   libraries=()
-  for name in libxkbcommon.so.0 libwayland-client.so.0 libwayland-cursor.so.0 libwayland-egl.so.1 libX11.so.6 libXcursor.so.1 libXi.so.6 libXrandr.so.2; do
+  for name in libXcursor.so.1 libXi.so.6 libXrandr.so.2; do
     library=$(ldconfig -p | awk -v name="$name" '$1 == name && /x86-64/ && !found {print $NF; found=1}')
     test -n "$library" || { echo "Missing build library: $name" >&2; exit 1; }
     libraries+=(--library "$library")
@@ -52,7 +63,7 @@ else
   export LDAI_OUTPUT="$output.AppImage" LINUXDEPLOY_OUTPUT_VERSION="$RELEASE_VERSION"
   "$deploy" --appdir dist/AppDir --executable dist/AppDir/usr/bin/NeelemaNet \
     --desktop-file packaging/net.neelemanet.launcher.desktop \
-    --icon-file packaging/neelemanet.svg "${libraries[@]}" --output appimage
+    --icon-file packaging/neelemanet.svg "${exclusions[@]}" "${libraries[@]}" --output appimage
   chmod +x "$output.AppImage"
   "$output.AppImage" --version
 fi

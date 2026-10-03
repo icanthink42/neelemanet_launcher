@@ -116,9 +116,34 @@ jobs:
           compression-level: 0
           retention-days: 7
 
+  linux-gui:
+    name: Test Linux download on a newer desktop
+    needs: [prepare, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: NeelemaNet-linux-x64
+          path: release-assets
+      - name: Install test displays and desktop libraries
+        run: sudo apt-get update && sudo apt-get install -y weston xvfb xauth x11-utils libegl1 libgl1-mesa-dri libglx-mesa0 libxkbcommon0 libxkbcommon-x11-0 libxcursor1 libxi6 libxrandr2
+      - name: Check the downloaded AppImage on X11 and Wayland
+        shell: bash
+        run: |
+          set -euo pipefail
+          appimages=(release-assets/*.AppImage)
+          test "${#appimages[@]}" -eq 1
+          xvfb-run -a python3 packaging/smoke-linux.py "${appimages[0]}" x11
+          python3 packaging/smoke-linux.py "${appimages[0]}" wayland
+
   publish:
     name: Publish GitHub Release
-    needs: [prepare, build]
+    needs: [prepare, build, linux-gui]
     runs-on: ubuntu-22.04
     timeout-minutes: 10
     permissions:
