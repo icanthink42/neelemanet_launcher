@@ -2,8 +2,10 @@ use anyhow::{Context, Result};
 use eframe::egui::{self, Color32, RichText};
 use neelemanet_launcher::{
     Paths,
-    catalog::{self, Catalog, Source},
-    launcher, prism,
+    catalog::{self, Catalog, Pack, Source},
+    launcher,
+    preferences::Preferences,
+    prism,
 };
 use std::{
     process::Command,
@@ -22,6 +24,7 @@ enum Event {
     Done(String),
     Error(String),
     ProcessError(String),
+    Preferences(Preferences),
 }
 enum Job {
     Initialize,
@@ -30,6 +33,7 @@ enum Job {
     Play(usize),
     Install(usize),
     Update(usize),
+    SaveMemory(usize, Option<u32>),
 }
 
 struct App {
@@ -50,6 +54,9 @@ struct App {
     search: String,
     settings: bool,
     catalog_input: String,
+    preferences: Preferences,
+    memory_draft: Option<(String, Option<u32>)>,
+    total_memory_gib: f64,
 }
 
 pub fn run(paths: Paths, source: Source) -> Result<()> {
@@ -80,6 +87,8 @@ pub fn run(paths: Paths, source: Source) -> Result<()> {
             style.spacing.button_padding = egui::vec2(16.0, 10.0);
             cc.egui_ctx.set_global_style(style);
             let (sender, receiver) = mpsc::channel();
+            let mut system = sysinfo::System::new();
+            system.refresh_memory();
             let mut app = App {
                 catalog_input: source.label(),
                 paths,
@@ -98,6 +107,9 @@ pub fn run(paths: Paths, source: Source) -> Result<()> {
                 last_account_poll: Instant::now() - Duration::from_secs(5),
                 search: String::new(),
                 settings: false,
+                preferences: Preferences::default(),
+                memory_draft: None,
+                total_memory_gib: system.total_memory() as f64 / (1024.0 * 1024.0 * 1024.0),
             };
             app.start(Job::Initialize, &cc.egui_ctx);
             Ok(Box::new(app))
@@ -121,7 +133,7 @@ impl App {
         let ctx = ctx.clone();
         let profile = self.profile.clone();
         let mut pack = match &job {
-            Job::Play(i) | Job::Install(i) | Job::Update(i) => {
+            Job::Play(i) | Job::Install(i) | Job::Update(i) | Job::SaveMemory(i, _) => {
                 self.catalog.as_ref().and_then(|c| c.packs.get(*i)).cloned()
             }
             _ => None,
@@ -133,6 +145,15 @@ impl App {
             };
             let progress = |message, fraction| send(Event::Progress(message, fraction));
             let result: Result<String> = (|| {
+                if let Job::SaveMemory(_, memory_mb) = job {
+                    let _lock = paths.lock()?;
+                    let selected = pack.as_ref().context("Select a pack first")?;
+                    let preferences =
+                        Preferences::save_memory(&paths, selected, &source, memory_mb)?;
+                    send(Event::Preferences(preferences));
+                    return Ok("RAM saved. It will apply the next time Minecraft starts.".into());
+                }
+                send(Event::Preferences(Preferences::load(&paths)?));
                 if let Some(selected) = &pack {
                     let id = selected.id.clone();
                     progress("Checking the latest pack list…".into(), None);
@@ -240,6 +261,10 @@ impl App {
                     self.error = Some(error);
                 }
                 Event::ProcessError(error) => self.error = Some(error),
+                Event::Preferences(preferences) => {
+                    self.preferences = preferences;
+                    self.memory_draft = None;
+                }
             }
         }
         if self.last_account_poll.elapsed() > Duration::from_secs(2) {
@@ -248,6 +273,45 @@ impl App {
                 self.profile = self.accounts.first().cloned().unwrap_or_default();
             }
             self.last_account_poll = Instant::now();
+        }
+    }
+
+    fn memory_controls(&mut self, ui: &mut egui::Ui, pack: &Pack) {
+        let key = pack.instance_id(&self.source);
+        let saved = self.preferences.memory_mb.get(&key).copied();
+        if self.memory_draft.as_ref().is_none_or(|(id, _)| id != &key) {
+            self.memory_draft = Some((key, saved));
+        }
+        let (_, draft) = self.memory_draft.as_mut().unwrap();
+        let mut save = false;
+        ui.group(|ui| {
+            ui.label(RichText::new("Minecraft RAM").strong());
+            ui.add_enabled_ui(!self.busy, |ui| {
+                let mut use_default = draft.is_none();
+                if ui.checkbox(&mut use_default, format!("Use pack default ({:.1} GiB)", pack.memory_mb as f64 / 1024.0)).changed() {
+                    *draft = if use_default { None } else { Some(pack.memory_mb) };
+                }
+                if let Some(memory_mb) = draft {
+                    let mut gib = *memory_mb as f64 / 1024.0;
+                    if ui.add(egui::Slider::new(&mut gib, 0.5..=64.0).step_by(0.5).suffix(" GiB")).changed() {
+                        *memory_mb = (gib * 1024.0).round() as u32;
+                    }
+                }
+                let changed = *draft != saved;
+                ui.horizontal(|ui| {
+                    save = ui.add_enabled(changed, egui::Button::new("Save RAM")).clicked();
+                    if changed { ui.label("Unsaved change"); }
+                    else { ui.label(format!("Saved: {:.1} GiB", saved.unwrap_or(pack.memory_mb) as f64 / 1024.0)); }
+                });
+            });
+            if self.total_memory_gib > 0.0 {
+                ui.label(RichText::new(format!("Your computer has {:.1} GiB. Leave some RAM for your system and other apps.", self.total_memory_gib)).small().color(MUTED));
+            }
+            ui.label(RichText::new("Applies the next time Minecraft starts.").small().color(MUTED));
+        });
+        let memory_mb = *draft;
+        if save {
+            self.start(Job::SaveMemory(self.selected, memory_mb), ui.ctx());
         }
     }
 
@@ -432,7 +496,7 @@ impl eframe::App for App {
                     ui.add_space(4.0);
                     ui.label("Your launch engine, Java, and mods are handled automatically. Sign in with a Microsoft account that owns Minecraft: Java Edition, then you're ready to go.");
                     ui.add_space(12.0);
-                    ui.label(RichText::new(format!("Memory allowance: {} GiB", pack.memory_mb as f32 / 1024.0)).color(MUTED));
+                    self.memory_controls(ui, &pack);
                     if let Some(server) = &pack.server { ui.label(RichText::new(format!("Join the server automatically: {server}")).color(GREEN)); }
                 } else {
                     ui.heading("Welcome to NeelemaNet");

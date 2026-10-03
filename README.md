@@ -4,6 +4,8 @@ A Rust desktop launcher for a curated list of Minecraft modpacks. Players open N
 
 Prism handles Minecraft authentication and game launch. Its first-run screen asks for Microsoft sign-in. An existing account can be managed through **Accounts → Manage Accounts** in Prism. NeelemaNet displays the Minecraft profile names and lets players select an account. Credentials and refresh tokens stay in Prism's account store.
 
+Each pack has a **Minecraft RAM** control. Uncheck **Use pack default**, choose 0.5–64 GiB, and click **Save RAM**. The limit applies the next time Minecraft starts, including for already-installed packs and CLI launches. Choices are saved per pack/catalog in `preferences.json` in the data folder and survive launcher restarts and pack updates. Re-enable **Use pack default** and save to follow the catalog's RAM setting again. This controls Minecraft's maximum Java heap; the game and launcher can also use memory outside that heap.
+
 ## Run locally
 
 Requires Rust 1.95 or newer to build. Players using a prebuilt download do not need Rust.

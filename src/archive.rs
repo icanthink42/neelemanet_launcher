@@ -156,6 +156,50 @@ pub fn configure_instance(root: &Path, pack: &Pack) -> Result<()> {
     Ok(())
 }
 
+/// Change only the managed memory keys, preserving Prism's other instance settings.
+pub fn configure_memory(root: &Path, memory_mb: u32) -> Result<()> {
+    crate::preferences::validate_memory(memory_mb)?;
+    let path = root.join("instance.cfg");
+    let original = fs::read_to_string(&path)?;
+    let mut text = String::new();
+    let mut general = false;
+    let mut found = false;
+    for line in original.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            general = trimmed == "[General]";
+            if general {
+                found = true;
+                text.push_str(&format!(
+                    "[General]\nOverrideMemory=true\nMinMemAlloc=512\nMaxMemAlloc={memory_mb}\n"
+                ));
+                continue;
+            }
+        }
+        if general
+            && line.split_once('=').is_some_and(|(key, _)| {
+                matches!(key.trim(), "OverrideMemory" | "MinMemAlloc" | "MaxMemAlloc")
+            })
+        {
+            continue;
+        }
+        text.push_str(line);
+        text.push('\n');
+    }
+    ensure!(
+        found,
+        "Prism instance configuration is missing its General section"
+    );
+    if text != original {
+        let mut file = tempfile::NamedTempFile::new_in(root)?;
+        file.write_all(text.as_bytes())?;
+        file.as_file().sync_all()?;
+        file.persist(path)
+            .context("Could not apply the pack's RAM setting")?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -157,6 +157,7 @@ fn sync_pack(
     force: bool,
     progress: &Progress<'_>,
 ) -> Result<PathBuf> {
+    let memory_mb = crate::preferences::Preferences::load(paths)?.memory_for(pack, source);
     let previous = current_install(paths, pack, source)?;
     let download_source = source.resolve(&pack.url)?;
     if let Some(old) = &previous {
@@ -164,6 +165,7 @@ fn sync_pack(
             progress("Checking for pack updates…".into(), None);
             match source_stamp(&download_source) {
                 Ok(stamp) if old.stamp.as_ref().is_some_and(|s| !stamp.differs_from(s)) => {
+                    archive::configure_memory(&old.root(paths), memory_mb)?;
                     return Ok(old.root(paths));
                 }
                 Ok(_) => {}
@@ -172,6 +174,7 @@ fn sync_pack(
                         format!("Could not check for updates; using the installed pack: {error}"),
                         None,
                     );
+                    archive::configure_memory(&old.root(paths), memory_mb)?;
                     return Ok(old.root(paths));
                 }
             }
@@ -194,7 +197,11 @@ fn sync_pack(
     fs::create_dir(&unpacked)?;
     archive::extract_zip(&zip, &unpacked, progress)?;
     let root = archive::instance_root(&unpacked)?;
-    archive::configure_instance(&root, pack)?;
+    let configured_pack = Pack {
+        memory_mb,
+        ..pack.clone()
+    };
+    archive::configure_instance(&root, &configured_pack)?;
     if let Some(old) = &previous {
         // Check again after a potentially long download before snapshotting player data.
         ensure_not_running(&old.root(paths))?;

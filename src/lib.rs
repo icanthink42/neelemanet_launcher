@@ -2,6 +2,7 @@ pub mod archive;
 pub mod catalog;
 pub mod launcher;
 pub mod network;
+pub mod preferences;
 pub mod prism;
 
 use anyhow::{Context, Result};

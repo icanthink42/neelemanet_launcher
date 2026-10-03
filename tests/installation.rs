@@ -2,6 +2,7 @@ use neelemanet_launcher::{
     Paths,
     catalog::{Catalog, Source},
     launcher,
+    preferences::Preferences,
 };
 use std::{
     fs::{self, File},
@@ -113,6 +114,97 @@ fn parallel_installation_is_locked() {
     assert!(paths.lock().is_err());
     drop(guard);
     assert!(paths.lock().is_ok());
+}
+
+#[test]
+fn ram_changes_apply_to_existing_installs_without_redownloading_or_resetting_other_settings() {
+    let (temp, paths, source, mut catalog) = fixture();
+    let root = launcher::install(&paths, &catalog.packs[0], &source, &|_, _| {}).unwrap();
+    let config_path = root.join("instance.cfg");
+    let mut config = fs::read_to_string(&config_path).unwrap();
+    config.push_str("CustomSetting=keep me\n[Other]\nMaxMemAlloc=123\n");
+    fs::write(&config_path, config).unwrap();
+    Preferences::save_memory(&paths, &catalog.packs[0], &source, Some(6144)).unwrap();
+    assert_eq!(
+        launcher::install(&paths, &catalog.packs[0], &source, &|_, _| {}).unwrap(),
+        root
+    );
+    let config = fs::read_to_string(&config_path).unwrap();
+    assert!(config.contains("OverrideMemory=true\nMinMemAlloc=512\nMaxMemAlloc=6144\n"));
+    assert!(config.contains("CustomSetting=keep me\n[Other]\nMaxMemAlloc=123\n"));
+
+    // Also apply a new choice when the existing pack is used offline.
+    fs::remove_file(temp.path().join("pack.zip")).unwrap();
+    Preferences::save_memory(&paths, &catalog.packs[0], &source, Some(3072)).unwrap();
+    assert_eq!(
+        launcher::install(&paths, &catalog.packs[0], &source, &|_, _| {}).unwrap(),
+        root
+    );
+    assert!(
+        fs::read_to_string(&config_path)
+            .unwrap()
+            .contains("MaxMemAlloc=3072\n")
+    );
+
+    // Reset follows the latest catalog default, including a default-only change.
+    Preferences::save_memory(&paths, &catalog.packs[0], &source, None).unwrap();
+    catalog.packs[0].memory_mb = 10240;
+    assert_eq!(
+        launcher::install(&paths, &catalog.packs[0], &source, &|_, _| {}).unwrap(),
+        root
+    );
+    assert!(
+        fs::read_to_string(&config_path)
+            .unwrap()
+            .contains("MaxMemAlloc=10240\n")
+    );
+}
+
+#[test]
+fn ram_preferences_survive_updates_and_stay_specific_to_the_pack_and_catalog() {
+    let (_temp, paths, source, mut catalog) = fixture();
+    Preferences::save_memory(&paths, &catalog.packs[0], &source, Some(6144)).unwrap();
+    let old = launcher::install(&paths, &catalog.packs[0], &source, &|_, _| {}).unwrap();
+    assert!(
+        fs::read_to_string(old.join("instance.cfg"))
+            .unwrap()
+            .contains("MaxMemAlloc=6144\n")
+    );
+    catalog.packs[0].version = "2.0.0".into();
+    catalog.packs[0].memory_mb = 12288;
+    let updated = launcher::update(&paths, &catalog.packs[0], &source, &|_, _| {}).unwrap();
+    assert_ne!(old, updated);
+    assert!(
+        fs::read_to_string(updated.join("instance.cfg"))
+            .unwrap()
+            .contains("MaxMemAlloc=6144\n")
+    );
+    assert_eq!(
+        launcher::current_install(&paths, &catalog.packs[0], &source)
+            .unwrap()
+            .unwrap()
+            .pack
+            .memory_mb,
+        12288
+    );
+    let saved = Preferences::load(&paths).unwrap();
+    let mut other = catalog.packs[0].clone();
+    other.id = "other-pack".into();
+    assert_eq!(saved.memory_for(&other, &source), 12288);
+    let other_source = Source::parse("https://example.com/packs.toml").unwrap();
+    assert_eq!(saved.memory_for(&catalog.packs[0], &other_source), 12288);
+
+    for invalid in [0, 511, 65537] {
+        assert!(
+            Preferences::save_memory(&paths, &catalog.packs[0], &source, Some(invalid)).is_err()
+        );
+    }
+    assert_eq!(
+        Preferences::load(&paths)
+            .unwrap()
+            .memory_for(&catalog.packs[0], &source),
+        6144
+    );
 }
 
 #[test]
@@ -324,6 +416,7 @@ fn cli_play_launches_the_active_revision_returned_by_installer() {
     fs::create_dir_all(engine.parent().unwrap()).unwrap();
     fs::write(&engine, "#!/bin/sh\nprintf '%s\\n' \"$@\"\n").unwrap();
     fs::set_permissions(&engine, fs::Permissions::from_mode(0o755)).unwrap();
+    Preferences::save_memory(&paths, &catalog.packs[0], &source, Some(6144)).unwrap();
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_neelemanet_launcher"))
         .arg("--catalog")
         .arg(source.label())
@@ -343,4 +436,9 @@ fn cli_play_launches_the_active_revision_returned_by_installer() {
     let log = fs::read_to_string(paths.root.join("prism-output.log")).unwrap();
     assert!(log.contains(&format!("--launch\n{}\n", current.instance)));
     assert_ne!(current.instance, catalog.packs[0].instance_id(&source));
+    assert!(
+        fs::read_to_string(current.root(&paths).join("instance.cfg"))
+            .unwrap()
+            .contains("MaxMemAlloc=6144\n")
+    );
 }
