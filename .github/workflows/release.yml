@@ -1,13 +1,63 @@
-name: Build player downloads
+name: Build and publish release
 on:
   workflow_dispatch:
   push:
-    tags: ['v*']
+    branches: [main]
 permissions:
   contents: read
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+env:
+  CARGO_TERM_COLOR: always
 jobs:
+  prepare:
+    name: Prepare automatic release
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+      commit: ${{ steps.release.outputs.commit }}
+      prerelease: ${{ steps.release.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Generate release version and validate published pack URLs
+        id: release
+        shell: python
+        run: |
+          import os, pathlib, re, subprocess, tomllib
+
+          version = tomllib.loads(pathlib.Path('Cargo.toml').read_text())['package']['version']
+          if not re.fullmatch(r'\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?', version):
+              raise SystemExit('Cargo.toml must contain a valid release version.')
+          build = os.environ['GITHUB_RUN_NUMBER']
+          if not build.isdigit():
+              raise SystemExit('Invalid workflow build number.')
+          # Rerunning a failed run reuses its tag; a new run gets a fresh tag.
+          separator = '.' if '+' in version else '+'
+          tag = f'v{version}{separator}build.{build}'
+          commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          catalog = tomllib.loads(pathlib.Path('packs.toml').read_text())
+          for pack in catalog['packs']:
+              if not pack['url'].startswith('https://'):
+                  raise SystemExit(f"Host {pack['id']}'s ZIP and put its HTTPS URL in packs.toml before publishing.")
+          prerelease = str('-' in version.split('+')[0]).lower()
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'tag={tag}\nversion={version}\ncommit={commit}\nprerelease={prerelease}\n')
+
   build:
+    name: Build ${{ matrix.artifact }}
+    needs: prepare
+    timeout-minutes: 60
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-22.04
@@ -16,50 +66,133 @@ jobs:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             artifact: NeelemaNet-windows-x64
-          - os: macos-latest
+          - os: macos-15
             target: aarch64-apple-darwin
             artifact: NeelemaNet-macos-arm64
-          - os: macos-latest
+          - os: macos-15-intel
             target: x86_64-apple-darwin
             artifact: NeelemaNet-macos-x64
     runs-on: ${{ matrix.os }}
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '11.0'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-      - name: Check published pack URLs
-        shell: python
-        run: |
-          import pathlib, tomllib
-          catalog = tomllib.loads(pathlib.Path('packs.toml').read_text())
-          for pack in catalog['packs']:
-              assert pack['url'].startswith('https://'), f"Host {pack['id']}'s ZIP and put its HTTPS URL in packs.toml before building player downloads."
-      - run: cargo build --release --locked --target ${{ matrix.target }}
+          components: rustfmt, clippy
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install Linux build libraries
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libgl1-mesa-dev
+      - name: Check formatting
+        run: cargo fmt --check
+      - name: Lint
+        run: cargo clippy --all-targets --locked --target ${{ matrix.target }} -- -D warnings
+      - name: Test
+        run: cargo test --locked --target ${{ matrix.target }}
+      - name: Build release binary
+        run: cargo build --release --locked --target ${{ matrix.target }}
       - name: Package download
         shell: bash
         env:
           BUILD_TARGET: ${{ matrix.target }}
           ARTIFACT: ${{ matrix.artifact }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
         run: |
+          set -euo pipefail
           mkdir -p dist
+          archive="$ARTIFACT-$RELEASE_TAG"
           if [[ "$BUILD_TARGET" == *apple* ]]; then
             mkdir -p 'dist/NeelemaNet.app/Contents/MacOS'
             cp "target/$BUILD_TARGET/release/neelemanet_launcher" 'dist/NeelemaNet.app/Contents/MacOS/NeelemaNet'
             cp packaging/Info.plist 'dist/NeelemaNet.app/Contents/Info.plist'
+            python - <<'PY'
+          import os, pathlib, plistlib
+          path = pathlib.Path('dist/NeelemaNet.app/Contents/Info.plist')
+          with path.open('rb') as file:
+              info = plistlib.load(file)
+          info['CFBundleShortVersionString'] = os.environ['RELEASE_VERSION'].split('-')[0].split('+')[0]
+          info['CFBundleVersion'] = os.environ['GITHUB_RUN_NUMBER']
+          with path.open('wb') as file:
+              plistlib.dump(info, file)
+          PY
             codesign --force --deep --sign - dist/NeelemaNet.app
-            ditto -c -k --keepParent dist/NeelemaNet.app "$ARTIFACT.zip"
+            codesign --verify --deep --strict dist/NeelemaNet.app
+            ditto -c -k --keepParent dist/NeelemaNet.app "$archive.zip"
           elif [[ "$BUILD_TARGET" == *windows* ]]; then
             cp "target/$BUILD_TARGET/release/neelemanet_launcher.exe" dist/NeelemaNet.exe
-            7z a "$ARTIFACT.zip" ./dist/NeelemaNet.exe
+            7z a "$archive.zip" ./dist/NeelemaNet.exe
           else
             cp "target/$BUILD_TARGET/release/neelemanet_launcher" dist/NeelemaNet
-            tar -czf "$ARTIFACT.tar.gz" -C dist NeelemaNet
+            tar -czf "$archive.tar.gz" -C dist NeelemaNet
           fi
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
           path: |
-            ${{ matrix.artifact }}.zip
-            ${{ matrix.artifact }}.tar.gz
+            ${{ matrix.artifact }}-${{ needs.prepare.outputs.tag }}.zip
+            ${{ matrix.artifact }}-${{ needs.prepare.outputs.tag }}.tar.gz
           if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  publish:
+    name: Publish GitHub Release
+    needs: [prepare, build]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: NeelemaNet-*
+          path: release-assets
+          merge-multiple: true
+      - name: Publish all platform downloads
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
+          PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in windows-x64 macos-arm64 macos-x64; do
+            test -s "release-assets/NeelemaNet-$name-$RELEASE_TAG.zip"
+          done
+          test -s "release-assets/NeelemaNet-linux-x64-$RELEASE_TAG.tar.gz"
+
+          # Create the tag only after every platform has passed and its archive is ready.
+          # The same workflow publishes it, so no second tag-triggered run is needed.
+          if existing_commit=$(gh api "repos/$GH_REPO/git/ref/tags/$RELEASE_TAG" --jq '.object.sha' 2>/dev/null); then
+            if [[ "$existing_commit" != "$RELEASE_COMMIT" ]]; then
+              echo "Release tag already points to a different commit; refusing to move it." >&2
+              exit 1
+            fi
+          else
+            gh api --method POST "repos/$GH_REPO/git/refs" \
+              -f "ref=refs/tags/$RELEASE_TAG" -f "sha=$RELEASE_COMMIT" > /dev/null
+          fi
+
+          # Keep new releases as drafts until every asset is uploaded.
+          # Existing drafts/releases can be completed by rerunning this workflow.
+          if ! gh release view "$RELEASE_TAG" > /dev/null 2>&1; then
+            flags=()
+            if [[ "$PRERELEASE" == true ]]; then
+              flags+=(--prerelease)
+            fi
+            gh release create "$RELEASE_TAG" --verify-tag --draft --generate-notes \
+              --title "NeelemaNet $RELEASE_TAG" "${flags[@]}"
+          fi
+          gh release upload "$RELEASE_TAG" release-assets/* --clobber
+          gh release edit "$RELEASE_TAG" --draft=false --prerelease="$PRERELEASE"
+          gh release view "$RELEASE_TAG" --json url --jq .url

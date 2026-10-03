@@ -1,18 +1,31 @@
 name: Check
-on: [push, pull_request]
+on:
+  push:
+    branches: ['**']
+  pull_request:
 permissions:
   contents: read
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   check:
     strategy:
+      fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-22.04, windows-latest, macos-15, macos-15-intel]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - name: Install Linux build libraries
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libgl1-mesa-dev
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked

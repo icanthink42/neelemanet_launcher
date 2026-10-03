@@ -23,7 +23,7 @@ On first opening, NeelemaNet downloads the official Prism 11.1.1 runtime into it
 1. Upload each Prism export ZIP to a public HTTPS host, such as a GitHub Release asset. The sample ZIP is too large for a normal Git commit.
 2. Edit the root `packs.toml` with each pack's direct HTTPS download URL and version. No checksum is needed.
 3. Commit and push `packs.toml` to this repository's `main` branch. Pack list changes then reach players when they open the launcher or press **Refresh**.
-4. Run the **Build player downloads** GitHub Actions workflow, or push a `v*` tag. It builds binaries using the same default GitHub catalog URL and produces downloadable archives. Download the workflow artifacts and attach the archives to your release.
+4. Players receive catalog updates without a launcher release. To distribute a new version of the launcher itself, use the release workflow below.
 
 The release workflow refuses local pack paths. The default catalog and Duck Craft download are configured for public access; private GitHub authentication is not implemented.
 
@@ -35,7 +35,28 @@ NEELEMANET_CATALOG_URL=https://raw.githubusercontent.com/OWNER/REPO/main/packs.t
 
 At runtime, `--catalog` or the `NEELEMANET_CATALOG_URL` environment variable overrides the embedded URL. Both development and release builds otherwise fetch the GitHub catalog; a local `packs.toml` does not override it automatically. The GUI's settings offer a temporary catalog override.
 
-The workflow packages Windows x64, Linux x64, and macOS Intel/Apple Silicon builds. Windows builds are unsigned; macOS bundles are ad-hoc signed, not notarized. Production distribution should use your own code-signing/notarization credentials to avoid operating system trust prompts. No signing credentials are included.
+## Build and publish launcher releases
+
+**Push to `main` to publish a launcher release.** No manual tag or version bump is required. GitHub Actions runs formatting, Clippy, and tests, then builds Windows, Linux, and both Mac architectures. After every build succeeds, it creates the tag and publishes all four downloads to a [GitHub Release](https://github.com/icanthink42/neelemanet_launcher/releases) with generated release notes.
+
+Tags combine the version in `Cargo.toml` with an automatic build number, for example `v0.1.0+build.42`. Each new workflow run gets a unique tag, even when `Cargo.toml` stays unchanged. The source files are not rewritten or committed by the workflow. The automatic build suffix is release metadata; normal builds remain regular releases, while a base version such as `0.2.0-beta.1` produces a prerelease.
+
+For `v0.1.0+build.42`, the release assets are:
+
+| Platform | Download |
+| --- | --- |
+| Windows x64 | `NeelemaNet-windows-x64-v0.1.0+build.42.zip` containing `NeelemaNet.exe` |
+| Linux x64 | `NeelemaNet-linux-x64-v0.1.0+build.42.tar.gz` containing the executable |
+| macOS Apple Silicon | `NeelemaNet-macos-arm64-v0.1.0+build.42.zip` containing `NeelemaNet.app` |
+| macOS Intel | `NeelemaNet-macos-x64-v0.1.0+build.42.zip` containing `NeelemaNet.app` |
+
+Rerun a failed workflow to resume the same tag/release, or choose **Actions → Build and publish release → Run workflow** to start a new build without entering a tag. Each platform builds the exact triggering commit. No tag is created if a build fails; existing tags are never moved to another commit. New releases remain drafts until all downloads are uploaded. Reruns can replace uploaded assets unless repository release immutability is enabled.
+
+Branch pushes and pull requests also run the separate **Check** workflow. Pack-only changes still reach existing launchers through the catalog; pushing them to `main` also triggers a new launcher release.
+
+Publishing uses GitHub's built-in `GITHUB_TOKEN`, with `contents: write` granted only to the publishing job; no personal access token is needed. Enable GitHub Actions in the repository if it is disabled. Pack URLs must be public HTTPS downloads. The workflow updates the Mac application's version metadata from the release version.
+
+Windows builds are unsigned; macOS bundles are ad-hoc signed, not notarized. Production distribution should use your own code-signing/notarization credentials to avoid operating system trust prompts. No signing credentials are included.
 
 ## Catalog format
 
